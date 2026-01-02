@@ -11435,8 +11435,8 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
         return true;
     }
 
-    function findResolutionCycleStartIndex(target: TypeSystemEntity, propertyName: TypeSystemPropertyName): number {
-        for (let i = resolutionTargets.length - 1; i >= resolutionStart; i--) {
+    function findResolutionCycleStartIndex(target: TypeSystemEntity, propertyName: TypeSystemPropertyName, ignoreResolutionStart?: boolean): number {
+        for (let i = resolutionTargets.length - 1; i >= (ignoreResolutionStart ? 0 : resolutionStart); i--) {
             if (resolutionTargetHasProperty(resolutionTargets[i], resolutionPropertyNames[i])) {
                 return -1;
             }
@@ -12472,6 +12472,11 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
     function getTypeOfVariableOrParameterOrProperty(symbol: Symbol): Type {
         const links = getSymbolLinks(symbol);
         if (!links.type) {
+            // Check for circularity using the full resolution stack (ignoring resolutionStart)
+            // to prevent infinite recursion when resolutionStart has been temporarily reset.
+            if (findResolutionCycleStartIndex(symbol, TypeSystemPropertyName.Type, /*ignoreResolutionStart*/ true) >= 0) {
+                return reportCircularityError(symbol);
+            }
             const type = getTypeOfVariableOrParameterOrPropertyWorker(symbol);
             // For a contextually typed parameter it is possible that a type has already
             // been assigned (in assignTypeToParameterAndFixTypeParameters), and we want
@@ -16470,8 +16475,11 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
     }
 
     function isResolvingReturnTypeOfSignature(signature: Signature): boolean {
+        // Use ignoreResolutionStart: true to check the full resolution stack, ensuring that
+        // contextual return type cycle detection works correctly even when resolutionStart
+        // has been temporarily reset (e.g., during signature resolution).
         return signature.compositeSignatures && some(signature.compositeSignatures, isResolvingReturnTypeOfSignature) ||
-            !signature.resolvedReturnType && findResolutionCycleStartIndex(signature, TypeSystemPropertyName.ResolvedReturnType) >= 0;
+            !signature.resolvedReturnType && findResolutionCycleStartIndex(signature, TypeSystemPropertyName.ResolvedReturnType, /*ignoreResolutionStart*/ true) >= 0;
     }
 
     function getRestTypeOfSignature(signature: Signature): Type {
@@ -37588,7 +37596,7 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
             return cached;
         }
         const saveResolutionStart = resolutionStart;
-        if (!cached) {
+        if (!cached || cached === resolvingSignature) {
             // If we haven't already done so, temporarily reset the resolution stack. This allows us to
             // handle "inverted" situations where, for example, an API client asks for the type of a symbol
             // containined in a function call argument whose contextual type depends on the symbol itself
